@@ -45,7 +45,7 @@ class ScholicPdfViewer {
   private highlights: any[] = [];
   private highlightMenuHost: HTMLElement | null = null;
   private myUserId: number | string | null = null;
-  private currentTab: 'mine' | 'community' | 'all' = 'mine';
+  private currentTab: 'mine' | 'community' | 'all' | 'chat' = 'mine';
   
   private eventBus: EventBus;
   private pdfViewer: PDFViewer;
@@ -614,7 +614,8 @@ class ScholicPdfViewer {
     this.annotations.forEach(ann => {
       const isMine = String(ann.userId) === String(this.myUserId);
       let shouldShow = false;
-      if (this.currentTab === 'all') shouldShow = true;
+      if (this.currentTab === 'chat') shouldShow = false;
+      else if (this.currentTab === 'all') shouldShow = true;
       else if (this.currentTab === 'mine') shouldShow = isMine;
       else if (this.currentTab === 'community') shouldShow = !isMine;
       
