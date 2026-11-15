@@ -5,10 +5,20 @@ export interface PageSearchMatch {
   context: string;
   start: number;
   end: number;
+  pageNumber?: number;
 }
 export interface PageSearchResult {
   query: string;
   matches: PageSearchMatch[];
+  truncated?: boolean;
+  nextOffset?: number;
+}
+export interface PageSearchProvider {
+  search(
+    query: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<PageSearchResult>;
 }
 export interface ChatMessage {
   id?: number;
@@ -142,10 +152,16 @@ export class ChatController {
   private loading = false;
   private historyLoading = false;
   private statusMessage = "";
+  private pageSearchProvider?: PageSearchProvider;
 
-  async render(container: HTMLElement, pageUrl: string): Promise<void> {
+  async render(
+    container: HTMLElement,
+    pageUrl: string,
+    provider?: PageSearchProvider,
+  ): Promise<void> {
     this.container = container;
     this.pageUrl = pageUrl;
+    this.pageSearchProvider = provider;
     container.innerHTML = `<style>
       .chat-root{display:flex;flex-direction:column;height:100%;box-sizing:border-box;background:linear-gradient(180deg,#141414 0%,#111 100%)}
       .chat-messages{flex:1;overflow-y:auto;padding:18px 16px 10px;scroll-behavior:smooth}.chat-empty{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;color:#888;font-size:12px;padding:30px}.chat-empty strong{display:block;color:#ddd;font-size:15px;margin-bottom:7px}.chat-empty-logo{display:block;width:52px;height:52px;margin:0 auto 18px}
@@ -218,8 +234,11 @@ export class ChatController {
       const port = chrome.runtime.connect({ name: "scholic-chat" });
       await new Promise<void>((resolve, reject) => {
         port.onMessage.addListener((message) => {
-          if (message.type === "tool_call")
-            void this.handleToolCall(message.toolCall, port);
+          if (message.type === "tool_call") {
+            void this.handleToolCall(message.toolCall, port).catch((error) =>
+              console.error("[Scholic] page tool failed", error),
+            );
+          }
           if (message.type === "assistant_message") {
             this.messages.push(message.message);
             this.loading = false;
@@ -256,10 +275,37 @@ export class ChatController {
     call: any,
     port: chrome.runtime.Port,
   ): Promise<void> {
-    const output =
-      call.name === "SearchPageContent"
-        ? searchPageContent(call.arguments?.query || "")
-        : null;
+    let output: PageSearchResult | null = null;
+    let error = "";
+    try {
+      if (call.name === "SearchPageContent") {
+        output = await (this.pageSearchProvider?.search(
+          call.arguments?.searchText || "",
+          call.arguments?.limit,
+          call.arguments?.offset,
+        ) ||
+          searchPageContent(
+            call.arguments?.searchText || "",
+            call.arguments?.limit,
+            call.arguments?.offset,
+          ));
+      } else {
+        error = "unsupported page tool";
+      }
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+      console.error("[Scholic] page tool failed", call.name, caught);
+    }
+    const fittedOutput = output
+      ? fitPageSearchResult(
+          output,
+          call.id,
+          call.name,
+          Number.isFinite(call.arguments?.offset) && call.arguments.offset >= 0
+            ? Math.floor(call.arguments.offset)
+            : 0,
+        )
+      : null;
     port.postMessage({
       type: "SEND",
       payload: {
@@ -267,8 +313,8 @@ export class ChatController {
         result: {
           toolCallId: call.id,
           name: call.name,
-          output,
-          error: output ? "" : "unsupported page tool",
+          output: fittedOutput,
+          error: error || (fittedOutput ? "" : "page search failed"),
         },
       },
     });
@@ -395,39 +441,59 @@ export class ChatPanel {
   constructor(
     private controller: ChatController,
     private getPageUrl: () => string,
+    private getPageSearchProvider?: () => PageSearchProvider | undefined,
   ) {}
   render(container: HTMLElement): void {
-    void this.controller.render(container, this.getPageUrl());
+    void this.controller.render(
+      container,
+      this.getPageUrl(),
+      this.getPageSearchProvider?.(),
+    );
   }
 }
 
-export function searchPageContent(query: string): PageSearchResult {
-  let blocks = Array.from(
-    document.body.querySelectorAll<HTMLElement>(
-      'article, main, section, [role="main"], h1, h2, h3, p, li, blockquote, pre',
-    ),
+export function searchPageContent(
+  query: string,
+  limit = 10,
+  offset = 0,
+): PageSearchResult {
+  const resultLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 10;
+  const resultOffset =
+    Number.isFinite(offset) && offset >= 0 ? Math.floor(offset) : 0;
+  const usableBlocks = (selector: string): HTMLElement[] =>
+    Array.from(document.body.querySelectorAll<HTMLElement>(selector)).filter(
+      (block) =>
+        !block.closest(
+          "scholic-sidebar-host, scholic-popover-host, scholic-quick-highlight-menu, scholic-highlight-popup, [data-scholic-ui]",
+        ) && block.innerText.trim(),
+    );
+  let blocks = usableBlocks(
+    "h1, h2, h3, h4, h5, h6, p, li, blockquote, pre, code, td, figcaption",
   );
-  if (!blocks.length)
-    blocks = Array.from(document.body.querySelectorAll<HTMLElement>("div"));
-  blocks = blocks.filter(
-    (block) =>
-      !block.closest(
-        "scholic-sidebar-host, scholic-popover-host, scholic-quick-highlight-menu",
-      ) && block.innerText.trim(),
-  );
+  if (!blocks.length) blocks = usableBlocks("div");
+  if (!blocks.length) blocks = usableBlocks("span");
   const unique: HTMLElement[] = [];
-  for (const block of blocks)
+  for (const block of [...blocks].sort(
+    (a, b) => a.innerText.trim().length - b.innerText.trim().length,
+  )) {
     if (
       !unique.some(
         (existing) => existing.contains(block) || block.contains(existing),
       )
     )
       unique.push(block);
+  }
+  unique.sort((a, b) =>
+    a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+  );
   const needle = query.trim().toLowerCase();
   const matches: PageSearchMatch[] = [];
+  let matchIndex = 0;
   for (let index = 0; index < unique.length; index++) {
     const text = unique[index].innerText.trim();
     if (!needle || text.toLowerCase().includes(needle)) {
+      if (matchIndex++ < resultOffset) continue;
       const context = unique
         .slice(Math.max(0, index - 1), Math.min(unique.length, index + 2))
         .map((item) => item.innerText.trim())
@@ -440,7 +506,116 @@ export function searchPageContent(query: string): PageSearchResult {
         end: Math.max(0, start) + text.length,
       });
     }
-    if (matches.length >= 20) break;
+    if (matches.length >= resultLimit) break;
   }
   return { query, matches };
+}
+
+const SEARCH_RESULT_BUDGET = 14 * 1024;
+
+function fitsSearchEnvelope(
+  result: PageSearchResult,
+  toolCallId: string,
+  name: string,
+): boolean {
+  const envelope = {
+    type: "tool_result",
+    result: { toolCallId, name, output: result, error: "" },
+  };
+  return (
+    new TextEncoder().encode(JSON.stringify(envelope)).byteLength <=
+    SEARCH_RESULT_BUDGET
+  );
+}
+
+function fitPageSearchResult(
+  result: PageSearchResult,
+  toolCallId: string,
+  name: string,
+  offset: number,
+): PageSearchResult {
+  if (fitsSearchEnvelope(result, toolCallId, name)) return result;
+  const matches: PageSearchMatch[] = [];
+  for (const match of result.matches) {
+    const candidateMatches = [...matches, match];
+    const candidate: PageSearchResult = {
+      query: result.query,
+      matches: candidateMatches,
+      truncated: candidateMatches.length < result.matches.length,
+      nextOffset:
+        candidateMatches.length < result.matches.length
+          ? offset + candidateMatches.length + 1
+          : undefined,
+    };
+    if (!fitsSearchEnvelope(candidate, toolCallId, name)) break;
+    matches.push(match);
+  }
+  const truncated = matches.length < result.matches.length;
+  return {
+    query: result.query,
+    matches,
+    truncated,
+    nextOffset: truncated ? offset + matches.length + 1 : result.nextOffset,
+  };
+}
+
+export function createPdfPageSearchProvider(pdfDocument: {
+  numPages: number;
+  getPage(pageNumber: number): Promise<{
+    getTextContent(): Promise<{
+      items: Array<unknown>;
+    }>;
+  }>;
+}): PageSearchProvider {
+  const pageText = new Map<number, string>();
+  const loadPage = async (pageNumber: number): Promise<string> => {
+    const cached = pageText.get(pageNumber);
+    if (cached !== undefined) return cached;
+    const page = await pdfDocument.getPage(pageNumber);
+    const content = await page.getTextContent();
+    let text = "";
+    for (const rawItem of content.items) {
+      const item = rawItem as { str?: unknown; hasEOL?: unknown };
+      const value = typeof item.str === "string" ? item.str : "";
+      text += value;
+      if (item.hasEOL === true) text += "\n";
+      else if (value && !text.endsWith("\n")) text += " ";
+    }
+    text = text
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    pageText.set(pageNumber, text);
+    return text;
+  };
+  return {
+    async search(query, limit = 10, offset = 0): Promise<PageSearchResult> {
+      const resultLimit =
+        Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 10;
+      const resultOffset =
+        Number.isFinite(offset) && offset >= 0 ? Math.floor(offset) : 0;
+      const needle = query.trim().toLowerCase();
+      const matches: PageSearchMatch[] = [];
+      let matchingPage = 0;
+      for (
+        let pageNumber = 1;
+        pageNumber <= pdfDocument.numPages;
+        pageNumber++
+      ) {
+        const text = await loadPage(pageNumber);
+        if (!text) continue;
+        if (needle && !text.toLowerCase().includes(needle)) continue;
+        if (matchingPage++ < resultOffset) continue;
+        matches.push({
+          text,
+          context: text,
+          start: 0,
+          end: text.length,
+          pageNumber,
+        });
+        if (matches.length >= resultLimit) break;
+      }
+      return { query, matches };
+    },
+  };
 }

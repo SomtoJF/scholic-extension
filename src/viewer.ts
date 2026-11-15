@@ -14,6 +14,7 @@ import { SelectionPopover } from './popover';
 import { HighlightPopup } from './highlight-popup';
 import { Snipper, Area } from './snipper';
 import { canonicalAnnotationUrl } from './url';
+import { createPdfPageSearchProvider, PageSearchProvider } from './chat';
 
 // Load the worker from the local extension package
 (pdfjsLib as any).GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.mjs');
@@ -46,6 +47,7 @@ class ScholicPdfViewer {
   private highlightMenuHost: HTMLElement | null = null;
   private myUserId: number | string | null = null;
   private currentTab: 'mine' | 'community' | 'all' | 'chat' = 'mine';
+  private pageSearchProvider: PageSearchProvider | undefined;
   
   private eventBus: EventBus;
   private pdfViewer: PDFViewer;
@@ -76,6 +78,7 @@ class ScholicPdfViewer {
       onReact: (id, emoji) => this.handleReact(id, emoji),
       getCurrentUrl: () => canonicalAnnotationUrl(this.pdfUrl),
       getPageTitle: () => document.title,
+      getPageSearchProvider: () => this.pageSearchProvider,
     });
 
     this.popover = new SelectionPopover({
@@ -162,6 +165,7 @@ class ScholicPdfViewer {
       this.myUserId = meResponse?.id;
 
       const pdfDoc = await pdfjsLib.getDocument(url).promise;
+      this.pageSearchProvider = createPdfPageSearchProvider(pdfDoc);
       this.pdfHash = btoa(url).substring(0, 16); // Placeholder fingerprint
       
       this.pdfViewer.setDocument(pdfDoc);

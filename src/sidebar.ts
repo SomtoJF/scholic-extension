@@ -12,7 +12,7 @@
 
 import type { Selector } from './anchoring/types';
 import { CONFIG } from './config';
-import { ChatPanel } from './chat';
+import { ChatController, ChatPanel, PageSearchProvider } from './chat';
 import { canonicalAnnotationUrl } from './url';
 
 export interface AnnotationData {
@@ -40,7 +40,6 @@ export interface AnnotationData {
   myReaction?: string;
   _isPending?: boolean; // optimistic: not yet saved to backend
 }
-
 interface MentionUser {
   id: number;
   username: string;
@@ -102,6 +101,7 @@ export interface SidebarCallbacks {
   getCurrentUrl?: () => string;
   /** Current page title for bookmark metadata. */
   getPageTitle?: () => string;
+  getPageSearchProvider?: () => PageSearchProvider | undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -179,10 +179,21 @@ export class Sidebar {
   private annotationDeleteConfirmId: string | number | null = null;
   /** Stored document click handler for cleanup */
   private menuCloseHandler: (() => void) | null = null;
-  private chatPanel = new ChatPanel();
+  private chatController = new ChatController();
+  private chatPanel: ChatPanel;
 
   constructor(callbacks: SidebarCallbacks) {
     this.callbacks = callbacks;
+    this.chatPanel = new ChatPanel(
+      this.chatController,
+      () => this.callbacks.getCurrentUrl?.() || window.location.href,
+      () => this.callbacks.getPageSearchProvider?.(),
+    );
+
+    // Extension reloads can reinject the content script without removing the
+    // previous host. Keep one sidebar instance so stale UI cannot cover clicks.
+    document.querySelectorAll('scholic-sidebar-host').forEach((host) => host.remove());
+
     this.fetchUserData();
     this.loadPersistedTab();
 
