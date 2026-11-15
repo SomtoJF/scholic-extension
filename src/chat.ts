@@ -452,6 +452,60 @@ export class ChatPanel {
   }
 }
 
+const SEARCH_EXCERPT_LIMIT = 2400;
+const SEARCH_EXCERPT_PADDING = 700;
+
+function boundedSearchExcerpt(
+  text: string,
+  query: string,
+  limit = SEARCH_EXCERPT_LIMIT,
+): string {
+  const normalizedText = text.trim();
+  if (normalizedText.length <= limit) return normalizedText;
+  const needle = query.trim().toLowerCase();
+  if (!needle) return `${normalizedText.slice(0, limit).trimEnd()}…`;
+
+  const lowerText = normalizedText.toLowerCase();
+  const ranges: Array<[number, number]> = [];
+  let from = 0;
+  while (from < lowerText.length) {
+    const match = lowerText.indexOf(needle, from);
+    if (match < 0) break;
+    ranges.push([
+      Math.max(0, match - SEARCH_EXCERPT_PADDING),
+      Math.min(
+        normalizedText.length,
+        match + needle.length + SEARCH_EXCERPT_PADDING,
+      ),
+    ]);
+    from = match + needle.length;
+  }
+  if (!ranges.length) return `${normalizedText.slice(0, limit).trimEnd()}…`;
+
+  const merged: Array<[number, number]> = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range[0] <= previous[1]) previous[1] = range[1];
+    else merged.push([...range]);
+  }
+
+  const parts: string[] = [];
+  let size = 0;
+  for (const [start, end] of merged) {
+    const prefix = parts.length || start > 0 ? "…" : "";
+    const available = limit - size - prefix.length;
+    if (available <= 0) break;
+    const part = normalizedText
+      .slice(start, Math.min(end, start + available))
+      .trim();
+    if (!part) continue;
+    parts.push(`${prefix}${part}`);
+    size += prefix.length + part.length;
+    if (size >= limit) break;
+  }
+  return parts.join("").trimEnd() + (size < normalizedText.length ? "…" : "");
+}
+
 export function searchPageContent(
   query: string,
   limit = 10,
@@ -491,19 +545,21 @@ export function searchPageContent(
   const matches: PageSearchMatch[] = [];
   let matchIndex = 0;
   for (let index = 0; index < unique.length; index++) {
-    const text = unique[index].innerText.trim();
-    if (!needle || text.toLowerCase().includes(needle)) {
+    const fullText = unique[index].innerText.trim();
+    if (!needle || fullText.toLowerCase().includes(needle)) {
       if (matchIndex++ < resultOffset) continue;
-      const context = unique
+      const fullContext = unique
         .slice(Math.max(0, index - 1), Math.min(unique.length, index + 2))
         .map((item) => item.innerText.trim())
         .join("\n");
-      const start = document.body.innerText.indexOf(text);
+      const text = boundedSearchExcerpt(fullText, query);
+      const context = boundedSearchExcerpt(fullContext, query);
+      const start = document.body.innerText.indexOf(fullText);
       matches.push({
         text,
         context,
         start: Math.max(0, start),
-        end: Math.max(0, start) + text.length,
+        end: Math.max(0, start) + fullText.length,
       });
     }
     if (matches.length >= resultLimit) break;
@@ -606,11 +662,12 @@ export function createPdfPageSearchProvider(pdfDocument: {
         if (!text) continue;
         if (needle && !text.toLowerCase().includes(needle)) continue;
         if (matchingPage++ < resultOffset) continue;
+        const excerpt = boundedSearchExcerpt(text, query);
         matches.push({
-          text,
-          context: text,
+          text: excerpt,
+          context: excerpt,
           start: 0,
-          end: text.length,
+          end: excerpt.length,
           pageNumber,
         });
         if (matches.length >= resultLimit) break;
