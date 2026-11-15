@@ -506,6 +506,35 @@ function boundedSearchExcerpt(
   return parts.join("").trimEnd() + (size < normalizedText.length ? "…" : "");
 }
 
+function logicalPdfExcerpt(text: string, query: string): string {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return "";
+  const needle = query.trim().toLowerCase();
+  if (!needle) return lines.join("\n");
+  const matchingLines = lines.flatMap((line, index) =>
+    line.toLowerCase().includes(needle) ? [index] : [],
+  );
+  if (!matchingLines.length) return "";
+
+  const ranges: Array<[number, number]> = [];
+  for (const index of matchingLines) {
+    const range: [number, number] = [
+      Math.max(0, index - 2),
+      Math.min(lines.length, index + 3),
+    ];
+    const previous = ranges[ranges.length - 1];
+    if (previous && range[0] <= previous[1]) previous[1] = range[1];
+    else ranges.push(range);
+  }
+
+  return ranges
+    .map(([start, end]) => lines.slice(start, end).join("\n"))
+    .join("\n…\n");
+}
+
 export function searchPageContent(
   query: string,
   limit = 10,
@@ -594,24 +623,32 @@ function fitPageSearchResult(
   const matches: PageSearchMatch[] = [];
   for (const match of result.matches) {
     const candidateMatches = [...matches, match];
+    const hasMore =
+      result.truncated || candidateMatches.length < result.matches.length;
     const candidate: PageSearchResult = {
       query: result.query,
       matches: candidateMatches,
-      truncated: candidateMatches.length < result.matches.length,
-      nextOffset:
-        candidateMatches.length < result.matches.length
-          ? offset + candidateMatches.length + 1
-          : undefined,
+      truncated: hasMore,
+      nextOffset: hasMore
+        ? candidateMatches.length < result.matches.length
+          ? offset + candidateMatches.length
+          : result.nextOffset
+        : undefined,
     };
     if (!fitsSearchEnvelope(candidate, toolCallId, name)) break;
     matches.push(match);
   }
-  const truncated = matches.length < result.matches.length;
+  const truncated = result.truncated || matches.length < result.matches.length;
+  const nextOffset = truncated
+    ? matches.length < result.matches.length
+      ? offset + (matches.length || 1)
+      : result.nextOffset
+    : result.nextOffset;
   return {
     query: result.query,
     matches,
     truncated,
-    nextOffset: truncated ? offset + matches.length + 1 : result.nextOffset,
+    nextOffset,
   };
 }
 
@@ -662,7 +699,7 @@ export function createPdfPageSearchProvider(pdfDocument: {
         if (!text) continue;
         if (needle && !text.toLowerCase().includes(needle)) continue;
         if (matchingPage++ < resultOffset) continue;
-        const excerpt = boundedSearchExcerpt(text, query);
+        const excerpt = logicalPdfExcerpt(text, query);
         matches.push({
           text: excerpt,
           context: excerpt,
