@@ -63,8 +63,8 @@ let highlightMenuHost: HTMLElement | null = null;
 /** Pending highlight elements from the current annotate/highlight action (before save) */
 let pendingHighlightElements: HTMLElement[] = [];
 
-/** Current active tab ('mine' | 'community' | 'all') */
-let currentActiveTab: 'mine' | 'community' | 'all' = 'mine';
+/** Current active tab ('mine' | 'community' | 'all' | 'chat') */
+let currentActiveTab: 'mine' | 'community' | 'all' | 'chat' = 'mine';
 
 /** Guard flag: when true, we're modifying the DOM ourselves */
 let suppressSync = false;
@@ -1040,7 +1040,7 @@ function handleFocusAnnotation(annotationId: string): void {
 /**
  * Handle tab change from the sidebar.
  */
-function handleTabChange(tab: 'mine' | 'community' | 'all'): void {
+function handleTabChange(tab: 'mine' | 'community' | 'all' | 'chat'): void {
   currentActiveTab = tab;
   filterHighlights();
 }
@@ -1057,7 +1057,10 @@ async function filterHighlights(): Promise<void> {
     for (const annotation of pageAnnotations) {
       const highlights = highlightMap.get(String(annotation.id));
       if (highlights) {
-        highlights.forEach(h => h.classList.remove('scholic-hidden'));
+        highlights.forEach(h => {
+          if (currentActiveTab === 'chat') h.classList.add('scholic-hidden');
+          else h.classList.remove('scholic-hidden');
+        });
       }
     }
     return;
@@ -1074,7 +1077,9 @@ async function filterHighlights(): Promise<void> {
 
     const isMine = String(annotation.userId) === String(myUserId);
     let shouldShow = false;
-    if (currentActiveTab === 'all') {
+    if (currentActiveTab === 'chat') {
+      shouldShow = false;
+    } else if (currentActiveTab === 'all') {
       shouldShow = true;
     } else if (currentActiveTab === 'mine') {
       shouldShow = isMine;

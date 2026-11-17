@@ -307,6 +307,50 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   }
 });
 
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'scholic-chat') return;
+
+  let socket: WebSocket | null = null;
+  const pending: string[] = [];
+
+  port.onMessage.addListener(async (message) => {
+    if (message.type === 'CONNECT') {
+      if (socket) return;
+      const token = await getAuthToken();
+      if (!token) {
+        port.postMessage({ type: 'error', error: 'Sign in to use chat' });
+        return;
+      }
+      socket = new WebSocket(
+        `${API_BASE.replace(/^http/, 'ws')}/chats/${message.chatId}/messages?token=${encodeURIComponent(token)}`,
+      );
+      socket.onopen = () => {
+        for (const item of pending) socket?.send(item);
+        pending.length = 0;
+      };
+      socket.onmessage = (event) => port.postMessage(JSON.parse(event.data));
+      socket.onerror = () => port.postMessage({ type: 'error', error: 'Chat connection failed' });
+      socket.onclose = () => {
+        socket = null;
+        port.postMessage({ type: 'closed' });
+      };
+      return;
+    }
+    if (message.type === 'SEND') {
+      const payload = JSON.stringify(message.payload);
+      if (socket?.readyState === WebSocket.OPEN) socket.send(payload);
+      else pending.push(payload);
+      return;
+    }
+    if (message.type === 'CLOSE') {
+      socket?.close();
+      socket = null;
+    }
+  });
+
+  port.onDisconnect.addListener(() => socket?.close());
+});
+
 /**
  * Route messages to the appropriate handler.
  */
@@ -334,6 +378,8 @@ async function handleMessage(message: any): Promise<any> {
       return clearReaction(message.data.annotationId);
     case 'FETCH_BOOKMARK':
       return fetchBookmark(message.data.url);
+    case 'FETCH_CHAT':
+      return fetchChat(message.data.url);
     case 'FETCH_COLLECTIONS':
       return fetchCollections(message.data?.targetType, message.data?.targetId, message.data?.offset);
     case 'ADD_COLLECTION_ENTRY':
@@ -383,6 +429,10 @@ async function clearReaction(annotationId: string | number): Promise<any> {
 
 async function fetchBookmark(url: string): Promise<any> {
   return apiRequest(`/bookmarks/by-url?url=${encodeURIComponent(url)}`);
+}
+
+async function fetchChat(url: string): Promise<any> {
+  return apiRequest(`/chats/by-url?url=${encodeURIComponent(url)}`);
 }
 
 async function createBookmark(url: string, title?: string, isPrivate = true): Promise<any> {

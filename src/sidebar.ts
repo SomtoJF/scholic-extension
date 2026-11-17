@@ -12,6 +12,7 @@
 
 import type { Selector } from './anchoring/types';
 import { CONFIG } from './config';
+import { ChatController, ChatPanel, PageSearchProvider } from './chat';
 import { canonicalAnnotationUrl } from './url';
 
 export interface AnnotationData {
@@ -39,7 +40,6 @@ export interface AnnotationData {
   myReaction?: string;
   _isPending?: boolean; // optimistic: not yet saved to backend
 }
-
 interface MentionUser {
   id: number;
   username: string;
@@ -90,7 +90,7 @@ export interface SidebarCallbacks {
   /** Trigger a full refresh of annotations for the page */
   onRefresh: () => void;
   /** Active tab changed */
-  onTabChange: (tab: 'mine' | 'community' | 'all') => void;
+  onTabChange: (tab: 'mine' | 'community' | 'all' | 'chat') => void;
   /** Load next page of annotations */
   onLoadMore?: () => void;
   /** Annotation form was dismissed without saving — clear pending highlight on the page */
@@ -101,6 +101,7 @@ export interface SidebarCallbacks {
   getCurrentUrl?: () => string;
   /** Current page title for bookmark metadata. */
   getPageTitle?: () => string;
+  getPageSearchProvider?: () => PageSearchProvider | undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,8 +162,8 @@ export class Sidebar {
   private isRendering: boolean = false;
   /** Queued render — flushed after the current render finishes */
   private pendingRender: { annotations: AnnotationData[]; hasMore: boolean } | null = null;
-  /** Active tab: 'mine' | 'community' | 'all' */
-  private activeTab: 'mine' | 'community' | 'all' = 'community';
+  /** Active tab: 'mine' | 'community' | 'all' | 'chat' */
+  private activeTab: 'mine' | 'community' | 'all' | 'chat' = 'community';
   private isAuthenticated: boolean = false;
   private bookmarkUrl: string = '';
   private isBookmarked: boolean = false;
@@ -178,9 +179,21 @@ export class Sidebar {
   private annotationDeleteConfirmId: string | number | null = null;
   /** Stored document click handler for cleanup */
   private menuCloseHandler: (() => void) | null = null;
+  private chatController = new ChatController();
+  private chatPanel: ChatPanel;
 
   constructor(callbacks: SidebarCallbacks) {
     this.callbacks = callbacks;
+    this.chatPanel = new ChatPanel(
+      this.chatController,
+      () => this.callbacks.getCurrentUrl?.() || window.location.href,
+      () => this.callbacks.getPageSearchProvider?.(),
+    );
+
+    // Extension reloads can reinject the content script without removing the
+    // previous host. Keep one sidebar instance so stale UI cannot cover clicks.
+    document.querySelectorAll('scholic-sidebar-host').forEach((host) => host.remove());
+
     this.fetchUserData();
     this.loadPersistedTab();
 
@@ -248,7 +261,7 @@ export class Sidebar {
    */
   private async loadPersistedTab(): Promise<void> {
     const result = await chrome.storage.local.get(['scholicActiveTab', 'scholicToken']);
-    const stored = result.scholicActiveTab as 'mine' | 'community' | 'all' | undefined;
+    const stored = result.scholicActiveTab as 'mine' | 'community' | 'all' | 'chat' | undefined;
     const isAuth = !!result.scholicToken;
 
     if (!isAuth) {
@@ -261,7 +274,7 @@ export class Sidebar {
   }
 
   /** Persist the active tab to chrome.storage.local. */
-  private saveActiveTab(tab: 'mine' | 'community' | 'all'): void {
+  private saveActiveTab(tab: 'mine' | 'community' | 'all' | 'chat'): void {
     chrome.storage.local.set({ scholicActiveTab: tab });
   }
 
@@ -918,6 +931,7 @@ export class Sidebar {
     }
     
     tabsHtml += `<button class="tab-btn ${this.activeTab === 'all' ? 'active' : ''}" data-tab="all">All</button>`;
+    tabsHtml += `<button class="tab-btn ${this.activeTab === 'chat' ? 'active' : ''}" data-tab="chat">Chat</button>`;
     
     tabs.innerHTML = `
       ${tabsHtml}
@@ -931,7 +945,7 @@ export class Sidebar {
     tabs.querySelectorAll('.tab-btn').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         const target = e.currentTarget as HTMLElement;
-        const tab = target.dataset.tab as 'mine' | 'community' | 'all';
+        const tab = target.dataset.tab as 'mine' | 'community' | 'all' | 'chat';
         if (this.activeTab !== tab) {
           this.activeTab = tab;
           this.saveActiveTab(tab);
@@ -2260,6 +2274,15 @@ export class Sidebar {
       const listContainer = this.panel.querySelector('.sidebar-list-container');
       if (!listContainer) return;
       listContainer.innerHTML = '';
+
+      if (this.activeTab === 'chat') {
+        const formContainer = this.panel.querySelector('.sidebar-form-container') as HTMLElement | null;
+        const imagePreviewContainer = this.panel.querySelector('.sidebar-image-preview-container') as HTMLElement | null;
+        if (formContainer) formContainer.innerHTML = '';
+        if (imagePreviewContainer) imagePreviewContainer.style.display = 'none';
+        this.chatPanel.render(listContainer);
+        return;
+      }
 
       // If guest, show a sticky login banner at the top of the list
       if (!this.isAuthenticated) {
