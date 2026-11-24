@@ -170,13 +170,20 @@ chrome.action.onClicked.addListener(async (tab) => {
     const result = await chrome.storage.local.get('enabledDomains');
     const enabledDomains = result.enabledDomains || {};
 
-    const isEnabled = !enabledDomains[domain];
-    enabledDomains[domain] = isEnabled;
+    if (enabledDomains[domain]) {
+      // Once enabled, the toolbar icon controls sidebar visibility. The
+      // domain remains enabled so annotations and highlights keep working.
+      await chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_SIDEBAR' })
+        .catch(() => { /* tab may not have content script yet */ });
+      return;
+    }
+
+    enabledDomains[domain] = true;
     await chrome.storage.local.set({ enabledDomains });
 
-    console.log(`[Scholic] ${domain} is now ${isEnabled ? 'enabled' : 'disabled'}`);
+    console.log(`[Scholic] ${domain} is now enabled`);
 
-    if (isEnabled) {
+    {
       // First check if onHeadersReceived flagged this tab as a PDF. Chrome 118+
       // injects content scripts onto its native PDF viewer, so sendMessage
       // succeeds there even though the content script can't swap viewers.
@@ -195,10 +202,6 @@ chrome.action.onClicked.addListener(async (tab) => {
         .catch(() => { /* tab may not have content script yet */ });
       return;
     }
-
-    // Disabling: just notify the content script (or silently ignore if not running)
-    chrome.tabs.sendMessage(tab.id, { type: 'SET_ENABLED', enabled: false })
-      .catch(() => { /* tab may not have content script */ });
   } catch (err) {
     console.warn('[Scholic] Could not toggle state:', err);
   }
