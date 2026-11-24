@@ -11,6 +11,7 @@ import { HIGHLIGHT_COLORS, Sidebar } from './sidebar';
 import { anchor, describe } from './anchoring/index';
 import { highlightRange, removeHighlights } from './highlighter';
 import { SelectionPopover } from './popover';
+import { AnnotationPopup } from './annotation-popup';
 import { HighlightPopup } from './highlight-popup';
 import { Snipper, Area } from './snipper';
 import { canonicalAnnotationUrl } from './url';
@@ -54,6 +55,7 @@ class ScholicPdfViewer {
   private pdfLinkService: PDFLinkService;
   
   private popover: SelectionPopover;
+  private annotationPopup: AnnotationPopup;
   private highlightPopup: HighlightPopup;
   private snipper: Snipper;
   private pendingSelectors: any[] | null = null;
@@ -81,9 +83,15 @@ class ScholicPdfViewer {
       getPageSearchProvider: () => this.pageSearchProvider,
     });
 
+    this.annotationPopup = new AnnotationPopup({
+      onSave: (annotation) => this.handleSave(annotation),
+      onCancel: () => this.discardPendingAnnotation(),
+    });
+
     this.popover = new SelectionPopover({
-      onAnnotate: (range, quoteText) => {
+      onAnnotate: async (range, quoteText) => {
         this.popover.hide();
+        const selectionRect = range.getBoundingClientRect();
         this.pendingSelectors = describe(document.getElementById('viewer')!, range);
         
         // Optimistic visual selection
@@ -94,7 +102,14 @@ class ScholicPdfViewer {
         this.pendingHighlightElements = highlightRange(range, 'scholic-highlight', tempId);
         window.getSelection()?.removeAllRanges();
 
-        this.sidebar.openWithQuote(quoteText, this.pendingSelectors);
+        const auth = await chrome.storage.local.get('scholicToken');
+        this.annotationPopup.show(
+          selectionRect,
+          quoteText,
+          this.pendingSelectors,
+          !!auth.scholicToken,
+          canonicalAnnotationUrl(this.pdfUrl),
+        );
       },
       onHighlight: async (range, quoteText) => {
         this.popover.hide();

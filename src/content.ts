@@ -19,6 +19,7 @@ import { SelectionPopover } from './popover';
 import { HIGHLIGHT_COLORS, Sidebar } from './sidebar';
 import type { AnnotationData } from './sidebar';
 import { HighlightPopup } from './highlight-popup';
+import { AnnotationPopup } from './annotation-popup';
 import { Snipper, Area } from './snipper';
 import { hydrateBlocklist, isBlockedUrl, watchBlocklistStorage } from './blocklist';
 import { canonicalAnnotationUrl } from './url';
@@ -284,6 +285,11 @@ function showQuickHighlightMenu(highlightId: string, highlightEl: HTMLElement): 
 const popover = new SelectionPopover({
   onAnnotate: (range, quoteText) => handleAnnotate(range, quoteText),
   onHighlight: (range, quoteText) => handleHighlight(range, quoteText),
+});
+
+const annotationPopup = new AnnotationPopup({
+  onSave: (annotation) => handleSaveAnnotation(annotation),
+  onCancel: () => discardPendingAnnotation(),
 });
 
 /**
@@ -667,13 +673,14 @@ function updateBadgeCount(): void {
  *
  * 1. Generate selectors from the selection Range
  * 2. Immediately highlight the selected text (pending style)
- * 3. Open the sidebar with the quoted text
+ * 3. Open an in-page composer with the quoted text
  * 4. Wait for user to fill in a note and click Save
  */
-function handleAnnotate(range: Range, quoteText: string): void {
+async function handleAnnotate(range: Range, quoteText: string): Promise<void> {
   console.log('[Scholic] Annotate clicked. Quote:', quoteText);
   
   // Generate all 3 selector types for maximum re-anchoring reliability
+  const selectionRect = range.getBoundingClientRect();
   const selectors = describe(document.body, range);
   console.log('[Scholic] Generated selectors:', selectors);
 
@@ -691,9 +698,9 @@ function handleAnnotate(range: Range, quoteText: string): void {
   // Clear the text selection
   window.getSelection()?.removeAllRanges();
 
-  // Open sidebar with the form pre-filled
-  sidebar.openWithQuote(quoteText, selectors);
-  console.log('[Scholic] Sidebar opened.');
+  const auth = await chrome.storage.local.get('scholicToken');
+  annotationPopup.show(selectionRect, quoteText, selectors, !!auth.scholicToken);
+  console.log('[Scholic] In-page annotation composer opened.');
 }
 
 /**
